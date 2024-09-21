@@ -6,7 +6,9 @@
 #
 # Learn more: https://codecrafters.io/program-interface
 
+# set -x # Print commands before executing them
 set -e # Exit early if any commands fail
+# set -o pipefail # Propagate exit code of last command in pipe to exit code of this script
 
 # Copied from .codecrafters/compile.sh
 #
