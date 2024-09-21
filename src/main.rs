@@ -3,23 +3,96 @@ use std::io;
 use std::process;
 
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    if pattern.chars().count() == 1 {
-        return input_line.contains(pattern);
-    } else if pattern == "\\d" {
-        return input_line.chars().any(|c| c.is_digit(10));
-    } else if pattern == "\\w" {
-        return input_line.chars().any(|c| c.is_alphanumeric());
-    } else if pattern.starts_with('[') && pattern.ends_with(']') {
-        if pattern.len() >= 3 && pattern.chars().nth(1).unwrap() == '^' {
-            let chars = pattern[2..pattern.len() - 1].chars().collect::<Vec<char>>();
-            return chars.iter().all(|c| !input_line.contains(*c));
-        } else {
-            let chars = pattern[1..pattern.len() - 1].chars().collect::<Vec<char>>();
-            return chars.iter().any(|c| input_line.contains(*c));
+    // Create peekable iterators for the input line and the pattern
+    let mut input_chars = input_line.chars().peekable();
+    let mut pattern_chars = pattern.chars().peekable();
+
+    while let Some(&p) = pattern_chars.peek() {
+        match p {
+            '\\' => {
+                pattern_chars.next(); // Consume the backslash
+                if let Some(&next_p) = pattern_chars.peek() {
+                    match next_p {
+                        'd' => {
+                            pattern_chars.next(); // Consume 'd'
+                            if let Some(&c) = input_chars.peek() {
+                                if !c.is_digit(10) {
+                                    return false;
+                                }
+                                input_chars.next(); // Consume the digit
+                            } else {
+                                return false;
+                            }
+                        }
+                        'w' => {
+                            pattern_chars.next(); // Consume 'w'
+                            if let Some(&c) = input_chars.peek() {
+                                if !c.is_alphanumeric() {
+                                    return false;
+                                }
+                                input_chars.next(); // Consume the alphanumeric character
+                            } else {
+                                return false;
+                            }
+                        }
+                        _ => return false,
+                    }
+                } else {
+                    return false;
+                }
+            }
+            '[' => {
+                pattern_chars.next(); // Consume '['
+                let mut char_set = Vec::new();
+                let mut negated = false;
+                if let Some(&next_p) = pattern_chars.peek() {
+                    if next_p == '^' {
+                        negated = true;
+                        pattern_chars.next(); // Consume '^'
+                    }
+                }
+                while let Some(&c) = pattern_chars.peek() {
+                    if c == ']' {
+                        break;
+                    }
+                    char_set.push(c);
+                    pattern_chars.next(); // Consume the character
+                }
+                if pattern_chars.peek() == Some(&']') {
+                    pattern_chars.next(); // Consume ']'
+                } else {
+                    return false;
+                }
+                if let Some(&c) = input_chars.peek() {
+                    if negated {
+                        if char_set.contains(&c) {
+                            return false;
+                        }
+                    } else {
+                        if !char_set.contains(&c) {
+                            return false;
+                        }
+                    }
+                    input_chars.next(); // Consume the character
+                } else {
+                    return false;
+                }
+            }
+            _ => {
+                if let Some(&c) = input_chars.peek() {
+                    if c != p {
+                        return false;
+                    }
+                    input_chars.next(); // Consume the character
+                    pattern_chars.next(); // Consume the pattern character
+                } else {
+                    return false;
+                }
+            }
         }
-    } else {
-        panic!("Unhandled pattern: {}", pattern)
     }
+
+    input_chars.peek().is_none()
 }
 
 // fn find_digits(input_line: &str) -> Vec<char> {
@@ -47,9 +120,9 @@ fn main() {
 
     io::stdin().read_line(&mut input_line).unwrap();
 
-    //  Uncomment this block to pass the first stage
-    if match_pattern(&input_line, &pattern) {
-        println! {"{}, {}", &input_line, &pattern};
+    // Uncomment this block to pass the first stage
+    if match_pattern(&input_line.trim(), &pattern) {
+        println!("{}, {}", &input_line.trim(), &pattern);
         process::exit(0)
     } else {
         process::exit(1)
