@@ -18,21 +18,22 @@ pub enum Pattern {
         chars: String,
         negated: bool,
     },
+    StartStringAnchor,
+    EndStringAnchor,
 }
 trait CharOperations {
     fn first_char(&self) -> Option<char>;
-    fn first_char_in(&self, options: &str) -> bool;
     fn skip_first_char(&self) -> Self;
-}
-impl CharOperations for &str {
-    fn first_char(&self) -> Option<char> {
-        return self.chars().next();
-    }
     fn first_char_in(&self, options: &str) -> bool {
         match self.first_char() {
             Some(c) => options.contains(c),
             None => false,
         }
+    }
+}
+impl CharOperations for &str {
+    fn first_char(&self) -> Option<char> {
+        return self.chars().next();
     }
     fn skip_first_char(&self) -> Self {
         &self[1..]
@@ -45,6 +46,8 @@ impl FromStr for Pattern {
         let mut items = Vec::new();
         while let Some(c) = char_iterator.next() {
             let el = match c {
+                '^' => Pattern::StartStringAnchor,
+                '$' => Pattern::EndStringAnchor,
                 '\\' => match char_iterator.next() {
                     Some('w') => Pattern::AlphaNumeric,
                     Some('d') => Pattern::Digit,
@@ -57,6 +60,17 @@ impl FromStr for Pattern {
                     match items.pop() {
                         Some(p) => Pattern::Repeated {
                             min: 0,
+                            max: None,
+                            pattern: Box::new(p),
+                        },
+                        None => return Err("Invalid repeat".into()),
+                    }
+                }
+                '+' => {
+                    // need to grab last item and repeat
+                    match items.pop() {
+                        Some(p) => Pattern::Repeated {
+                            min: 1,
                             max: None,
                             pattern: Box::new(p),
                         },
@@ -96,8 +110,25 @@ impl FromStr for Pattern {
 impl Pattern {
     #[instrument]
     pub fn match_str<'a>(&'_ self, data: &'a str) -> HashSet<&'a str> {
+        self.match_str_recursive(data, true)
+    }
+    fn match_str_recursive<'a>(&'_ self, data: &'a str, first_char: bool) -> HashSet<&'a str> {
         trace!("Matching starts");
         match self {
+            Pattern::EndStringAnchor => {
+                if data.is_empty() {
+                    hash_set! {data}
+                } else {
+                    HashSet::new()
+                }
+            }
+            Pattern::StartStringAnchor => {
+                if first_char {
+                    hash_set! {data}
+                } else {
+                    HashSet::new()
+                }
+            }
             Pattern::AnyChar if data.first_char().is_some() => hash_set! {data.skip_first_char()},
             Pattern::ExactChar(c) if data.first_char() == Some(*c) => {
                 hash_set! {data.skip_first_char()}
@@ -117,7 +148,8 @@ impl Pattern {
                 for sub_pattern in sub_patterns {
                     let mut next_remaining = HashSet::new();
                     for r in remaining.iter() {
-                        next_remaining.extend(sub_pattern.match_str(r))
+                        next_remaining
+                            .extend(sub_pattern.match_str_recursive(r, first_char && *r == data))
                     }
                     remaining = next_remaining
                 }
@@ -139,7 +171,7 @@ impl Pattern {
             Pattern::OneOf(sub_patterns) => {
                 let mut result = HashSet::new();
                 for sub_pattern in sub_patterns {
-                    result.extend(sub_pattern.match_str(data))
+                    result.extend(sub_pattern.match_str_recursive(data, first_char))
                 }
                 result
             }
@@ -160,7 +192,7 @@ impl Pattern {
                     // try matching for the pattern and append
                     let mut new_ends = Vec::new();
                     for r in remaining {
-                        for x in pattern.match_str(r) {
+                        for x in pattern.match_str_recursive(r, first_char && (r == data)) {
                             if results.contains(x) {
                                 continue; // already considered
                             }
@@ -296,6 +328,38 @@ mod tests {
                 .expect("valid")
                 .match_str("1 apple"),
             hash_set![""]
+        );
+        assert_eq!(
+            Pattern::from_str("^[abc]*test")
+                .expect("valid")
+                .match_str("abctest123"),
+            hash_set!["123"]
+        );
+        assert!(Pattern::from_str("^z[abc]*test")
+            .expect("valid")
+            .match_str("abctest123")
+            .is_empty());
+        assert!(Pattern::from_str("^log")
+            .expect("valid")
+            .match_str("slog")
+            .is_empty());
+        assert!(Pattern::from_str(".*^log.*")
+            .expect("valid")
+            .match_str("slog")
+            .is_empty());
+        assert_eq!(
+            Pattern::from_str("test")
+                .expect("valid")
+                .match_str("testabc"),
+            hash_set!["abc"]
+        );
+        assert!(Pattern::from_str("test$")
+            .expect("valid")
+            .match_str("testabc")
+            .is_empty());
+        assert_eq!(
+            Pattern::from_str("a+").expect("valid").match_str("aabc"),
+            hash_set!["abc", "bc"]
         );
     }
 }

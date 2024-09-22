@@ -8,6 +8,7 @@ pub enum Pattern {
     Group(bool, String),
     Start,
     End,
+    OneOrMore(Box<Pattern>),
 }
 
 pub fn match_literal(chars: &mut Chars, literal: char) -> bool {
@@ -68,6 +69,18 @@ pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
                         continue 'input_iter;
                     }
                 }
+                Pattern::OneOrMore(p) => {
+                    let val = match **p {
+                        Pattern::Literal(c) => c,
+                        _ => panic!("Invalid pattern"),
+                    };
+                    if input_line.clone().contains(val) {
+                        // println!("Contains: {}", val);
+                        return true;
+                    } else {
+                        continue 'input_iter;
+                    }
+                }
             }
         }
         return true;
@@ -108,6 +121,11 @@ pub fn build_patterns(pattern: &str) -> Vec<Pattern> {
             }
             '^' => Pattern::Start,
             '$' => Pattern::End,
+            '+' => {
+                let last_pattern = patterns.pop().unwrap();
+                patterns.push(Pattern::OneOrMore(Box::new(last_pattern)));
+                continue;
+            }
             l => Pattern::Literal(l),
         });
     }
