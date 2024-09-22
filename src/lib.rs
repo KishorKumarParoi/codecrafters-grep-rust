@@ -1,12 +1,13 @@
 use std::str::Chars;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)] // Add PartialEq here
 pub enum Pattern {
     Literal(char),
     Digit,
     Alphanumeric,
     Group(bool, String),
     Start,
+    End,
 }
 
 pub fn match_literal(chars: &mut Chars, literal: char) -> bool {
@@ -33,13 +34,27 @@ pub fn match_group(chars: &mut Chars, group: &str) -> bool {
 }
 
 pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    let patterns = build_patterns(pattern);
-    let input_line = input_line.trim_matches('\n');
+    let mut patterns = build_patterns(pattern);
+    let mut input_line = input_line.trim_matches('\n').to_string(); // Make input_line mutable
+
+    if let Some(Pattern::End) = patterns.last() {
+        input_line = input_line.chars().rev().collect(); // Reverse the input_line
+        patterns.reverse(); // Reverse the patterns
+    }
+
+    println!("{:?}", patterns);
+    println!("{:?}", input_line);
+
     'input_iter: for i in 0..input_line.len() {
         let input = &input_line[i..];
         let mut iter = input.chars();
         for pattern in patterns.iter() {
             match pattern {
+                Pattern::End => {
+                    if i != 0 {
+                        continue 'input_iter;
+                    }
+                }
                 Pattern::Start => {
                     if i != 0 {
                         continue 'input_iter;
@@ -62,6 +77,11 @@ pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
                 }
                 Pattern::Group(positive, group) => {
                     if match_group(&mut iter, group) != *positive {
+                        continue 'input_iter;
+                    }
+                }
+                Pattern::End => {
+                    if iter.next().is_none() {
                         continue 'input_iter;
                     }
                 }
@@ -120,6 +140,7 @@ pub fn build_patterns(pattern: &str) -> Vec<Pattern> {
                 Pattern::Group(positive, group)
             }
             '^' => Pattern::Start,
+            '$' => Pattern::End,
             l => Pattern::Literal(l),
         })
     }
