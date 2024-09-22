@@ -13,6 +13,9 @@ pub enum Pattern {
         pattern: Box<Pattern>,
         max: Option<u32>,
     },
+    ZeroOrOnce {
+        pattern: Box<Pattern>,
+    },
 }
 
 pub fn match_literal(chars: &mut Chars, literal: char) -> bool {
@@ -31,7 +34,12 @@ pub fn match_group(chars: &mut Chars, group: &str) -> bool {
     chars.next().map_or(false, |c| group.contains(c))
 }
 
+pub fn make_flat_string(input_line: &str) -> String {
+    input_line.chars().filter(|&c| c != '?').collect()
+}
+
 pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
+    let flat_str = make_flat_string(pattern);
     let mut patterns = build_patterns(pattern);
     let mut input_line = input_line.trim_matches('\n').to_string(); // Make input_line mutable
 
@@ -52,6 +60,31 @@ pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
             match pattern {
                 Pattern::Start | Pattern::End => {
                     if i != 0 {
+                        continue 'input_iter;
+                    }
+                }
+                Pattern::ZeroOrOnce { pattern } => {
+                    println!("ZeroOrOnce");
+                    let val = match **pattern {
+                        Pattern::Literal(c) => c,
+                        _ => continue 'input_iter, // Handle other cases if necessary
+                    };
+                    println!("Val: {}", val);
+                    println!("Flat String: {:?}", flat_str);
+
+                    let without_pattern_char_string =
+                        flat_str.chars().filter(|&c| c != val).collect::<String>();
+
+                    println!(
+                        "Without Pattern Char String: {:?}",
+                        without_pattern_char_string
+                    );
+
+                    if input.clone().contains(&without_pattern_char_string)
+                        || input.clone().contains(&flat_str)
+                    {
+                        return true;
+                    } else {
                         continue 'input_iter;
                     }
                 }
@@ -143,6 +176,14 @@ pub fn build_patterns(pattern: &str) -> Vec<Pattern> {
                         max,
                         pattern: Box::new(last_pattern),
                     }
+                });
+                continue;
+            }
+            '?' => {
+                let last_pattern = patterns.pop().unwrap();
+                patterns.push({
+                    let pattern = Box::new(last_pattern);
+                    Pattern::ZeroOrOnce { pattern }
                 });
                 continue;
             }
