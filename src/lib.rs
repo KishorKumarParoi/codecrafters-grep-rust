@@ -11,26 +11,19 @@ pub enum Pattern {
 }
 
 pub fn match_literal(chars: &mut Chars, literal: char) -> bool {
-    let c = chars.next();
-    c.is_some_and(|c| c == literal)
+    chars.next().map_or(false, |c| c == literal)
 }
 
 pub fn match_digit(chars: &mut Chars) -> bool {
-    let c = chars.next();
-    if c.is_none() {
-        return false;
-    }
-    c.unwrap().is_digit(10)
+    chars.next().map_or(false, |c| c.is_digit(10))
 }
 
 pub fn match_alphanumeric(chars: &mut Chars) -> bool {
-    let c = chars.next();
-    c.is_some_and(|c| c.is_alphanumeric())
+    chars.next().map_or(false, |c| c.is_alphanumeric())
 }
 
 pub fn match_group(chars: &mut Chars, group: &str) -> bool {
-    let c = chars.next();
-    c.is_some_and(|c| group.contains(c))
+    chars.next().map_or(false, |c| group.contains(c))
 }
 
 pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
@@ -48,14 +41,9 @@ pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
     'input_iter: for i in 0..input_line.len() {
         let input = &input_line[i..];
         let mut iter = input.chars();
-        for pattern in patterns.iter() {
+        for pattern in &patterns {
             match pattern {
-                Pattern::End => {
-                    if i != 0 {
-                        continue 'input_iter;
-                    }
-                }
-                Pattern::Start => {
+                Pattern::Start | Pattern::End => {
                     if i != 0 {
                         continue 'input_iter;
                     }
@@ -80,36 +68,25 @@ pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
                         continue 'input_iter;
                     }
                 }
-                Pattern::End => {
-                    if iter.next().is_none() {
-                        continue 'input_iter;
-                    }
-                }
             }
         }
         return true;
     }
-    return false;
+    false
 }
 
 pub fn build_group_pattern(iter: &mut Chars) -> (bool, String) {
     let mut group = String::new();
     let mut positive = true;
-    if iter.clone().next().is_some_and(|c| c == '^') {
+    if iter.clone().next() == Some('^') {
         positive = false;
         iter.next();
     }
-    loop {
-        let member = iter.next();
-        if member.is_none() {
-            panic!("Incomplete character group");
+    while let Some(member) = iter.next() {
+        if member == ']' {
+            break;
         }
-        let member = member.unwrap();
-        if member != ']' {
-            group.push(member);
-            continue;
-        }
-        break;
+        group.push(member);
     }
     (positive, group)
 }
@@ -117,24 +94,14 @@ pub fn build_group_pattern(iter: &mut Chars) -> (bool, String) {
 pub fn build_patterns(pattern: &str) -> Vec<Pattern> {
     let mut iter = pattern.chars();
     let mut patterns = Vec::new();
-    loop {
-        let current = iter.next();
-        if current.is_none() {
-            break;
-        }
-        patterns.push(match current.unwrap() {
-            '\\' => {
-                let special = iter.next();
-                if special.is_none() {
-                    panic!("Incomplete special character")
-                }
-                match special.unwrap() {
-                    'd' => Pattern::Digit,
-                    'w' => Pattern::Alphanumeric,
-                    '\\' => Pattern::Literal('\\'),
-                    _ => panic!("Invalid special character"),
-                }
-            }
+    while let Some(current) = iter.next() {
+        patterns.push(match current {
+            '\\' => match iter.next() {
+                Some('d') => Pattern::Digit,
+                Some('w') => Pattern::Alphanumeric,
+                Some('\\') => Pattern::Literal('\\'),
+                _ => panic!("Invalid special character"),
+            },
             '[' => {
                 let (positive, group) = build_group_pattern(&mut iter);
                 Pattern::Group(positive, group)
@@ -142,7 +109,7 @@ pub fn build_patterns(pattern: &str) -> Vec<Pattern> {
             '^' => Pattern::Start,
             '$' => Pattern::End,
             l => Pattern::Literal(l),
-        })
+        });
     }
     patterns
 }
