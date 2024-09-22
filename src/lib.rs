@@ -40,15 +40,15 @@ pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
         patterns.reverse(); // Reverse the patterns
     }
 
-    println!("Patterns -> {:?}", patterns);
-    println!("input_line -> {:?}", input_line);
+    // println!("Patterns -> {:?}", patterns);
+    // println!("input_line -> {:?}", input_line);
 
     'input_iter: for i in 0..input_line.len() {
         let input = &input_line[i..];
-        println!("input: {}, i: {}", input, i);
+        // println!("input: {}, i: {}", input, i);
         let mut iter = input.chars();
         for pattern in &patterns {
-            println!("input: {}, i: {}, {:?}", input, i, pattern);
+            // println!("input: {}, i: {}, {:?}", input, i, pattern);
             match pattern {
                 Pattern::Start | Pattern::End => {
                     if i != 0 {
@@ -60,13 +60,13 @@ pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
                     pattern,
                     max: _,
                 } => {
-                    println!("OneOrMore");
+                    // println!("OneOrMore");
                     let val = match **pattern {
                         Pattern::Literal(c) => c,
                         _ => continue 'input_iter, // Handle other cases if necessary
                     };
-                    println!("Val: {}", val);
-                    if input_line.clone().contains(val) {
+                    // println!("Val: {}", val);
+                    if input.clone().contains(val) {
                         return true;
                     } else {
                         continue 'input_iter;
@@ -134,7 +134,7 @@ pub fn build_patterns(pattern: &str) -> Vec<Pattern> {
             '$' => Pattern::End,
             '+' => {
                 let last_pattern = patterns.pop().unwrap();
-                println!("Last Pattern: {:?}", last_pattern);
+                // println!("Last Pattern: {:?}", last_pattern);
                 patterns.push({
                     let min = 1;
                     let max = None;
