@@ -1,137 +1,130 @@
 use std::env;
 use std::io;
 use std::process;
-
+use std::str::Chars;
+#[derive(Debug)]
+enum Pattern {
+    Literal(char),
+    Digit,
+    Alphanumeric,
+    Group(bool, String),
+}
+fn match_literal(chars: &mut Chars, literal: char) -> bool {
+    let c = chars.next();
+    c.is_some_and(|c| c == literal)
+}
+fn match_digit(chars: &mut Chars) -> bool {
+    let c = chars.next();
+    if c.is_none() {
+        return false;
+    }
+    c.unwrap().is_digit(10)
+}
+fn match_alphanumeric(chars: &mut Chars) -> bool {
+    let c = chars.next();
+    c.is_some_and(|c| c.is_alphanumeric())
+}
+fn match_group(chars: &mut Chars, group: &str) -> bool {
+    let c = chars.next();
+    c.is_some_and(|c| group.contains(c))
+}
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    // Create peekable iterators for the input line and the pattern
-    let mut input_chars = input_line.chars().peekable();
-    let mut pattern_chars = pattern.chars().peekable();
-
-    while let Some(&p) = pattern_chars.peek() {
-        match p {
-            '\\' => {
-                pattern_chars.next(); // Consume the backslash
-                if let Some(&next_p) = pattern_chars.peek() {
-                    match next_p {
-                        'd' => {
-                            pattern_chars.next(); // Consume 'd'
-                            if let Some(&c) = input_chars.peek() {
-                                if !c.is_digit(10) {
-                                    return false;
-                                }
-                                input_chars.next(); // Consume the digit
-                            } else {
-                                return false;
-                            }
-                        }
-                        'w' => {
-                            pattern_chars.next(); // Consume 'w'
-                            if let Some(&c) = input_chars.peek() {
-                                if !c.is_alphanumeric() {
-                                    return false;
-                                }
-                                input_chars.next(); // Consume the alphanumeric character
-                            } else {
-                                return false;
-                            }
-                        }
-                        _ => return false,
-                    }
-                } else {
-                    return false;
-                }
-            }
-            '[' => {
-                pattern_chars.next(); // Consume '['
-                let mut char_set = Vec::new();
-                let mut negated = false;
-                if let Some(&next_p) = pattern_chars.peek() {
-                    if next_p == '^' {
-                        negated = true;
-                        pattern_chars.next(); // Consume '^'
+    let patterns = build_patterns(pattern);
+    let input_line = input_line.trim_matches('\n');
+    'input_iter: for i in 0..input_line.len() {
+        let input = &input_line[i..];
+        let mut iter = input.chars();
+        for pattern in patterns.iter() {
+            match pattern {
+                Pattern::Literal(l) => {
+                    if !match_literal(&mut iter, *l) {
+                        continue 'input_iter;
                     }
                 }
-                while let Some(&c) = pattern_chars.peek() {
-                    if c == ']' {
-                        break;
+                Pattern::Digit => {
+                    if !match_digit(&mut iter) {
+                        continue 'input_iter;
                     }
-                    char_set.push(c);
-                    pattern_chars.next(); // Consume the character
                 }
-                if pattern_chars.peek() == Some(&']') {
-                    pattern_chars.next(); // Consume ']'
-                } else {
-                    return false;
-                }
-                if let Some(&c) = input_chars.peek() {
-                    if negated {
-                        if char_set.contains(&c) {
-                            return false;
-                        }
-                    } else {
-                        if !char_set.contains(&c) {
-                            return false;
-                        }
+                Pattern::Alphanumeric => {
+                    if !match_alphanumeric(&mut iter) {
+                        continue 'input_iter;
                     }
-                    input_chars.next(); // Consume the character
-                } else {
-                    return false;
                 }
-            }
-            _ => {
-                if let Some(&c) = input_chars.peek() {
-                    if c != p {
-                        return false;
+                Pattern::Group(positive, group) => {
+                    if match_group(&mut iter, group) != *positive {
+                        continue 'input_iter;
                     }
-                    input_chars.next(); // Consume the character
-                    pattern_chars.next(); // Consume the pattern character
-                } else {
-                    return false;
                 }
             }
         }
+        return true;
     }
-
-    input_chars.peek().is_none()
+    return false;
 }
-
-// fn find_digits(input_line: &str) -> Vec<char> {
-//     input_line.chars().filter(|c| c.is_digit(10)).collect()
-// }
-
-// Usage: echo <input_text> | your_program.sh -E <pattern>
-fn main() {
-    // You can use print statements as follows for debugging,
-    // they'll be visible when running tests.
-    println!("Logs from your program will appear here!");
-
-    // Print all command-line arguments
-    for (i, arg) in env::args().enumerate() {
-        println!("Argument {}: {}", i, arg);
+fn build_group_pattern(iter: &mut Chars) -> (bool, String) {
+    let mut group = String::new();
+    let mut positive = true;
+    if iter.clone().next().is_some_and(|c| c == '^') {
+        positive = false;
+        iter.next();
     }
-
+    loop {
+        let member = iter.next();
+        if member.is_none() {
+            panic!("Incomplete character group");
+        }
+        let member = member.unwrap();
+        if member != ']' {
+            group.push(member);
+            continue;
+        }
+        break;
+    }
+    (positive, group)
+}
+fn build_patterns(pattern: &str) -> Vec<Pattern> {
+    let mut iter = pattern.chars();
+    let mut patterns = Vec::new();
+    loop {
+        let current = iter.next();
+        if current.is_none() {
+            break;
+        }
+        patterns.push(match current.unwrap() {
+            '\\' => {
+                let special = iter.next();
+                if special.is_none() {
+                    panic!("Incomplete special character")
+                }
+                match special.unwrap() {
+                    'd' => Pattern::Digit,
+                    'w' => Pattern::Alphanumeric,
+                    '\\' => Pattern::Literal('\\'),
+                    _ => panic!("Invalid special character"),
+                }
+            }
+            '[' => {
+                let (positive, group) = build_group_pattern(&mut iter);
+                Pattern::Group(positive, group)
+            }
+            l => Pattern::Literal(l),
+        })
+    }
+    patterns
+}
+// Usage: echo <input_text> | your_grep.sh -E <pattern>
+fn main() {
     if env::args().nth(1).unwrap() != "-E" {
         println!("Expected first argument to be '-E'");
         process::exit(1);
     }
-
     let pattern = env::args().nth(2).unwrap();
     let mut input_line = String::new();
-
     io::stdin().read_line(&mut input_line).unwrap();
-
-    // Uncomment this block to pass the first stage
-    if match_pattern(&input_line.trim(), &pattern) {
-        println!("{}, {}", &input_line.trim(), &pattern);
+    if match_pattern(&input_line, &pattern) {
         process::exit(0)
     } else {
         process::exit(1)
     }
-
-    // if (pattern.to_string() == "\\d") {
-    //     let digits = find_digits(&input_line);
-    //     println!("{:?}", digits);
-    // } else {
-    //     process::exit(1)
-    // }
 }
