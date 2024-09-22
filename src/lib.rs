@@ -6,6 +6,7 @@ pub enum Pattern {
     Digit,
     Alphanumeric,
     Group(bool, String),
+    Start,
 }
 
 pub fn match_literal(chars: &mut Chars, literal: char) -> bool {
@@ -39,6 +40,11 @@ pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
         let mut iter = input.chars();
         for pattern in patterns.iter() {
             match pattern {
+                Pattern::Start => {
+                    if i != 0 {
+                        continue 'input_iter;
+                    }
+                }
                 Pattern::Literal(l) => {
                     if !match_literal(&mut iter, *l) {
                         continue 'input_iter;
@@ -113,6 +119,7 @@ pub fn build_patterns(pattern: &str) -> Vec<Pattern> {
                 let (positive, group) = build_group_pattern(&mut iter);
                 Pattern::Group(positive, group)
             }
+            '^' => Pattern::Start,
             l => Pattern::Literal(l),
         })
     }
