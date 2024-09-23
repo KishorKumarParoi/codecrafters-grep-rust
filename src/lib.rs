@@ -17,6 +17,7 @@ pub enum Pattern {
         pattern: Box<Pattern>,
     },
     Wildcard,
+    MatchMoreWord,
 }
 
 pub fn match_literal(chars: &mut Chars, literal: char) -> bool {
@@ -68,6 +69,38 @@ pub fn match_pattern(input_line: &str, pattern: &str) -> bool {
                 Pattern::Start | Pattern::End => {
                     if i != 0 {
                         continue 'input_iter;
+                    }
+                }
+                Pattern::MatchMoreWord => {
+                    let mut word = String::new();
+                    let mut words = Vec::new();
+                    let start_pos = pattern_copy.find('(');
+                    let end_pos = pattern_copy.find(')');
+                    let string = &pattern_copy[start_pos.unwrap() + 1..end_pos.unwrap()];
+
+                    println!("String: {:?}", string);
+
+                    for c in string.chars() {
+                        if c == '|' {
+                            if !word.is_empty() {
+                                words.push(word.clone());
+                                word.clear();
+                            }
+                        } else {
+                            word.push(c);
+                        }
+                    }
+                    if !word.is_empty() {
+                        words.push(word.clone());
+                    }
+
+                    println!("Input: {:?}", input);
+                    println!("Words: {:?}", words);
+
+                    for word in words {
+                        if input.contains(&word) {
+                            return true;
+                        }
                     }
                 }
                 Pattern::Wildcard => {
@@ -210,6 +243,7 @@ pub fn build_patterns(pattern: &str) -> Vec<Pattern> {
                 });
                 continue;
             }
+            '(' => Pattern::MatchMoreWord,
             '.' => Pattern::Wildcard,
             l => Pattern::Literal(l),
         });
