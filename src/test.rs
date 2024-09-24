@@ -1,365 +1,318 @@
-use map_macro::hash_set;
-use std::{collections::HashSet, str::FromStr};
-use tracing::{instrument, trace};
-#[derive(Clone, Debug, PartialEq, PartialOrd)]
-pub enum Pattern {
-    ExactChar(char),
-    AnyChar,
-    Digit,        // 0-9
-    AlphaNumeric, // a-zA-Z0-9_
-    Sequence(Vec<Pattern>),
-    Repeated {
-        min: usize,
-        max: Option<usize>,
-        pattern: Box<Pattern>,
-    },
-    OneOf(Vec<Pattern>),
-    CharacterSet {
-        chars: String,
-        negated: bool,
-    },
-    StartStringAnchor,
-    EndStringAnchor,
+use std::env;
+use std::io;
+use std::process;
+#[derive(Debug, PartialEq, Clone)]
+enum Character {
+    Any,
+    Literal(char),
+    DecimalDigit,
+    Word,
+    Group(Vec<Character>),
+    NegativeGroup(Vec<Character>),
+    Optional(Box<Character>),
+    RepeatedOptional(Box<Character>),
+    Either((Vec<Character>, Vec<Character>)),
+    CaptureGroup(Vec<Character>),
 }
-trait CharOperations {
-    fn first_char(&self) -> Option<char>;
-    fn skip_first_char(&self) -> Self;
-    fn first_char_in(&self, options: &str) -> bool {
-        match self.first_char() {
-            Some(c) => options.contains(c),
-            None => false,
+#[derive(Debug)]
+enum Modifier {
+    OneOrMore,
+    ZeroOrOne,
+    ZeroOrMore,
+    Reference(usize),
+}
+fn parse_pattern(input: &str) -> Vec<Character> {
+    let mut output: Vec<Character> = vec![];
+    let mut remainder = input;
+    while !remainder.is_empty() {
+        let (rest, character, modifier) = parse_character(remainder);
+        match modifier {
+            Some(Modifier::OneOrMore) => {
+                // Keep the original item
+                let prev = output.last().unwrap().clone();
+                // And add it as optional as well
+                output.push(Character::RepeatedOptional(Box::new(prev)));
+            }
+            Some(Modifier::ZeroOrOne) => {
+                // Remove the last item
+                let prev = output.pop().unwrap();
+                // And re-add it as an optional
+                output.push(Character::Optional(Box::new(prev)));
+            }
+            Some(Modifier::ZeroOrMore) => {
+                // Remove the last item
+                let prev = output.pop().unwrap();
+                // And re-add it as a repeated optional
+                output.push(Character::RepeatedOptional(Box::new(prev)));
+            }
+            Some(Modifier::Reference(index)) => {
+                let group = output
+                    .iter()
+                    .filter(|c| matches!(c, Character::CaptureGroup(_)))
+                    .nth(index - 1)
+                    .unwrap();
+                if let Character::CaptureGroup(group) = group {
+                    output.extend(group.clone());
+                }
+            }
+            None => {
+                output.push(character.expect("Should have a character without modifier"));
+            }
         }
+        remainder = rest;
     }
+    output
 }
-impl CharOperations for &str {
-    fn first_char(&self) -> Option<char> {
-        return self.chars().next();
-    }
-    fn skip_first_char(&self) -> Self {
-        &self[1..]
-    }
-}
-impl FromStr for Pattern {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut char_iterator = s.chars();
-        let mut items = Vec::new();
-        while let Some(c) = char_iterator.next() {
-            let el = match c {
-                '^' => Pattern::StartStringAnchor,
-                '$' => Pattern::EndStringAnchor,
-                '\\' => match char_iterator.next() {
-                    Some('w') => Pattern::AlphaNumeric,
-                    Some('d') => Pattern::Digit,
-                    Some(c) => Pattern::ExactChar(c), // assume an escape
-                    None => return Err(format!("Unterminated escape in {:?}", s)),
-                },
-                '.' => Pattern::AnyChar,
-                '*' => {
-                    // need to grab last item and repeat
-                    match items.pop() {
-                        Some(p) => Pattern::Repeated {
-                            min: 0,
-                            max: None,
-                            pattern: Box::new(p),
-                        },
-                        None => return Err("Invalid repeat".into()),
-                    }
-                }
-                '+' => {
-                    // need to grab last item and repeat
-                    match items.pop() {
-                        Some(p) => Pattern::Repeated {
-                            min: 1,
-                            max: None,
-                            pattern: Box::new(p),
-                        },
-                        None => return Err("Invalid repeat".into()),
-                    }
-                }
-                '[' => {
-                    let mut chars = String::new();
-                    let mut found_end = false;
-                    let mut negated = false;
-                    for c2 in char_iterator.by_ref() {
-                        match c2 {
-                            '^' if chars.is_empty() => negated = true,
-                            // TODO: should we handle escapes here?
-                            ']' => {
-                                found_end = true;
-                                break;
-                            }
-                            other => chars.push(other),
-                        }
-                    }
-                    if !found_end {
-                        return Err("Unterminated '[' pattern".into());
-                    }
-                    Pattern::CharacterSet { chars, negated }
-                }
-                e => Pattern::ExactChar(e),
+fn parse_character(input: &str) -> (&str, Option<Character>, Option<Modifier>) {
+    match input.chars().next() {
+        Some('\\') => (
+            &input[2..],
+            Some(special_character(&input.chars().nth(1).unwrap())),
+            None,
+        ),
+        Some('\\') => {
+            let remainder = &input[2..];
+            match &input.chars().nth(1).unwrap() {
+                index @ '1'..='9' => (
+                    remainder,
+                    None,
+                    Some(Modifier::Reference(index.to_digit(10).unwrap() as usize)),
+                ),
+                c => (remainder, Some(special_character(c)), None),
+            }
+        }
+        Some('[') => {
+            let mut group = vec![];
+            let mut remainder = &input[1..];
+            let is_negative = &input[1..2] == "^";
+            if is_negative {
+                remainder = &remainder[1..];
+            }
+            while !remainder.is_empty() && !remainder.starts_with(']') {
+                let (rest, character, _) = parse_character(remainder);
+            let pos = remainder.find(']').expect("closing bracket missing");
+            let group = parse_pattern(&remainder[..pos]);
+            remainder = &remainder[pos..];
+                group.push(character.expect("Should have a character without modifier"));
+                remainder = rest;
+            }
+            if is_negative {
+                (
+                    remainder.strip_prefix(']').unwrap(),
+                    Some(Character::NegativeGroup(group)),
+                    None,
+                )
+            let group = if is_negative {
+                Character::NegativeGroup(group)
+            } else {
+                (
+                    remainder.strip_prefix(']').unwrap(),
+                    Some(Character::Group(group)),
+                    None,
+                )
+            }
+                Character::Group(group)
             };
-            items.push(el);
+            (&remainder[1..], Some(group), None)
         }
-        if items.len() == 1 {
-            return Ok(items.pop().expect("has an element"));
+        Some('(') => {
+            let mut remainder = &input[1..];
+            let mut first = vec![];
+            while !remainder.starts_with('|') {
+                let (rest, character, _) = parse_character(remainder);
+                first.push(character.expect("Should have a character without modifier"));
+                remainder = rest;
+            }
+            // Strip '|' prefix
+            remainder = &remainder[1..];
+            let mut second = vec![];
+            while !remainder.starts_with(')') {
+                let (rest, character, _) = parse_character(remainder);
+            let left = if let Some(pos) = remainder.find('|') {
+                let pattern = &remainder[..pos];
+                remainder = &remainder[pos + 1..];
+                Some(parse_pattern(pattern))
+            } else {
+                None
+            };
+                second.push(character.expect("Should have a character without modifier"));
+            let pos = remainder.find(')').expect("closing paren missing");
+            let right = parse_pattern(&remainder[..pos]);
+                remainder = rest;
+            }
+            let group = match left {
+                Some(left) => vec![Character::Either((left, right))],
+                _ => right,
+            };
+            (
+                remainder.strip_prefix(')').unwrap(),
+                Some(Character::Either((first, second))),
+                &remainder[pos + 1..],
+                Some(Character::CaptureGroup(group)),
+                None,
+            )
         }
-        Ok(Pattern::Sequence(items))
+        Some('+') => (&input[1..], None, Some(Modifier::OneOrMore)),
+        Some('?') => (&input[1..], None, Some(Modifier::ZeroOrOne)),
+        Some('*') => (&input[1..], None, Some(Modifier::ZeroOrMore)),
+        Some('.') => (&input[1..], Some(Character::Any), None),
+        Some(c) => (&input[1..], Some(Character::Literal(c)), None),
+        _ => panic!("Unhandled pattern: {}", input),
     }
 }
-impl Pattern {
-    #[instrument]
-    pub fn match_str<'a>(&'_ self, data: &'a str) -> HashSet<&'a str> {
-        self.match_str_recursive(data, true)
+fn special_character(input: &char) -> Character {
+    match input {
+        'd' => Character::DecimalDigit,
+        'w' => Character::Word,
+        '\\' => Character::Literal('\\'),
+        _ => panic!("Unsupported special char: {}", input),
     }
-    fn match_str_recursive<'a>(&'_ self, data: &'a str, first_char: bool) -> HashSet<&'a str> {
-        trace!("Matching starts");
-        match self {
-            Pattern::EndStringAnchor => {
-                if data.is_empty() {
-                    hash_set! {data}
-                } else {
-                    HashSet::new()
-                }
+}
+fn to_match_result(input: &str, has_match: bool) -> Result<&str, &str> {
+    if has_match {
+        Ok(&input[1..])
+    } else {
+        Err(&input[1..])
+    }
+}
+fn match_character(input: &str, character: Character) -> Result<&str, &str> {
+    if input.is_empty() {
+        return Ok("");
+    }
+    let mut input = input;
+    let ch = input.chars().next().unwrap();
+    match character {
+        Character::Any => to_match_result(input, true),
+        Character::Literal(c) => to_match_result(input, c == ch),
+        Character::DecimalDigit => to_match_result(input, ch.is_ascii_digit()),
+        Character::Word => to_match_result(input, ch == '_' || ch.is_ascii_alphanumeric()),
+        Character::Group(items) => to_match_result(
+            input,
+            items
+                .iter()
+                .any(|i| match_character(input, i.clone()).is_ok()),
+        ),
+        Character::NegativeGroup(items) => to_match_result(
+            input,
+            !items
+                .iter()
+                .any(|i| match_character(input, i.clone()).is_ok()),
+        ),
+        Character::Optional(c) => {
+            if match_character(input, *c.clone()).is_ok() {
+                Ok(&input[1..])
+            } else {
+                Ok(input)
             }
-            Pattern::StartStringAnchor => {
-                if first_char {
-                    hash_set! {data}
-                } else {
-                    HashSet::new()
-                }
-            }
-            Pattern::AnyChar if data.first_char().is_some() => hash_set! {data.skip_first_char()},
-            Pattern::ExactChar(c) if data.first_char() == Some(*c) => {
-                hash_set! {data.skip_first_char()}
-            }
-            Pattern::Digit if data.first_char_in("0123456789") => {
-                hash_set! {data.skip_first_char()}
-            }
-            Pattern::AlphaNumeric
-                if data.first_char_in(
-                    "_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
-                ) =>
-            {
-                hash_set! {data.skip_first_char()}
-            }
-            Pattern::Sequence(sub_patterns) => {
-                let mut remaining = hash_set! {data};
-                for sub_pattern in sub_patterns {
-                    let mut next_remaining = HashSet::new();
-                    for r in remaining.iter() {
-                        next_remaining
-                            .extend(sub_pattern.match_str_recursive(r, first_char && *r == data))
-                    }
-                    remaining = next_remaining
-                }
-                remaining
-            }
-            Pattern::CharacterSet { chars, negated } => {
-                trace!(
-                    "TEST: {} and {} (for {})",
-                    data.first_char_in(chars),
-                    negated,
-                    chars
-                );
-                if !data.is_empty() && data.first_char_in(chars) != *negated {
-                    hash_set! {data.skip_first_char()}
-                } else {
-                    HashSet::new()
-                }
-            }
-            Pattern::OneOf(sub_patterns) => {
-                let mut result = HashSet::new();
-                for sub_pattern in sub_patterns {
-                    result.extend(sub_pattern.match_str_recursive(data, first_char))
-                }
-                result
-            }
-            Pattern::Repeated { min, max, pattern } => {
-                let mut results: HashSet<&str> = HashSet::new();
-                let mut remaining = vec![data];
-                let mut count = 0;
-                while !remaining.is_empty() {
-                    if count >= *min {
-                        // all matches appended
-                        results.extend(remaining.iter());
-                    }
-                    count += 1;
-                    // did we reach max count
-                    if max.map(|m| m < count).unwrap_or(false) {
+        }
+        Character::RepeatedOptional(c) => {
+            loop {
+                if match_character(input, *c.clone()).is_ok() {
+                    if input.is_empty() {
                         break;
                     }
-                    // try matching for the pattern and append
-                    let mut new_ends = Vec::new();
-                    for r in remaining {
-                        for x in pattern.match_str_recursive(r, first_char && (r == data)) {
-                            if results.contains(x) {
-                                continue; // already considered
-                            }
-                            new_ends.push(x);
-                        }
-                    }
-                    remaining = new_ends;
+                    input = &input[1..];
+                } else {
+                    break;
                 }
-                results
             }
-            _ => HashSet::new(),
+            Ok(input)
+        }
+        Character::Either((left, right)) => {
+            if let Ok(res) = check_branch(input, left) {
+                Ok(res)
+            } else if let Ok(res) = check_branch(input, right) {
+                Ok(res)
+            } else {
+                Err(input)
+            }
+        }
+        Character::CaptureGroup(group) => {
+            if let Ok(res) = check_branch(input, group) {
+                Ok(res)
+            } else {
+                Err(&input[1..])
+            }
         }
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test_match_str_exact_char() {
-        assert_eq!(Pattern::ExactChar('A').match_str("ABC"), hash_set! {"BC"});
-        assert!(Pattern::ExactChar('X').match_str("ABC").is_empty());
-        assert_eq!(Pattern::ExactChar('C').match_str("C"), hash_set![""]);
-    }
-    #[test]
-    fn test_match_str_digit() {
-        assert_eq!(Pattern::Digit.match_str("123"), hash_set!["23"]);
-        assert!(Pattern::Digit.match_str("ABC").is_empty());
-        assert_eq!(Pattern::Digit.match_str("9"), hash_set![""]);
-    }
-    #[test]
-    fn test_match_repeated() {
-        assert_eq!(
-            Pattern::Repeated {
-                min: 0,
-                max: Some(2),
-                pattern: Box::new(Pattern::Digit)
+fn check_branch(input: &str, chars: Vec<Character>) -> Result<&str, &str> {
+    let mut input_mut = input;
+    for ch in chars {
+        match match_character(input_mut, ch) {
+            Ok(res) => {
+                input_mut = res;
             }
-            .match_str("123"),
-            hash_set!["123", "23", "3"],
-        );
-        assert_eq!(
-            Pattern::Repeated {
-                min: 2,
-                max: Some(3),
-                pattern: Box::new(Pattern::Digit)
+            Err(_) => {
+                return Err(input);
             }
-            .match_str("12345"),
-            hash_set!["345", "45"]
-        );
-        assert_eq!(
-            Pattern::Repeated {
-                min: 2,
-                max: None,
-                pattern: Box::new(Pattern::Digit)
-            }
-            .match_str("12345"),
-            hash_set!["345", "45", "5", ""]
-        );
-        assert_eq!(
-            Pattern::Repeated {
-                min: 2,
-                max: None,
-                pattern: Box::new(Pattern::Digit)
-            }
-            .match_str("123ABC"),
-            hash_set!["3ABC", "ABC"]
-        );
+        }
     }
-    #[test]
-    fn test_match_str_sequence() {
-        assert_eq!(
-            Pattern::Sequence(vec![
-                Pattern::Digit,
-                Pattern::ExactChar('Z'),
-                Pattern::Digit,
-            ])
-            .match_str("1Z2XY"),
-            hash_set!["XY"]
-        );
+    Ok(input_mut)
+}
+fn match_pattern(input_line: &str, pattern: &str) -> bool {
+    let mut start_anchor = false;
+    let mut end_anchor = false;
+    let mut pattern = pattern;
+    if pattern.starts_with('^') {
+        start_anchor = true;
+        pattern = &pattern[1..];
     }
-    #[test_log::test]
-    fn test_matches() {
-        assert_eq!(
-            Pattern::from_str("AB\\d\\dZZ")
-                .expect("valid")
-                .match_str("AB12ZZCD"),
-            hash_set!["CD"]
-        );
-        assert_eq!(
-            Pattern::from_str("..\\dA")
-                .expect("valid")
-                .match_str("A12A"),
-            hash_set![""]
-        );
-        assert_eq!(
-            Pattern::from_str(".*foo")
-                .expect("valid")
-                .match_str("foobar"),
-            hash_set!["bar"]
-        );
-        assert_eq!(
-            Pattern::from_str(".*foo")
-                .expect("valid")
-                .match_str("somefoobar"),
-            hash_set!["bar"]
-        );
-        assert_eq!(
-            Pattern::from_str(".*ZZ.*X")
-                .expect("valid")
-                .match_str("ABCZZZ12XX"),
-            hash_set!["X", ""]
-        );
-        assert_eq!(
-            Pattern::from_str("[abc]*test")
-                .expect("valid")
-                .match_str("aabbcatest12"),
-            hash_set!["12"]
-        );
-        assert_eq!(
-            Pattern::from_str("[^xyz]*xtest")
-                .expect("valid")
-                .match_str("aabbcaxtest12"),
-            hash_set!["12"]
-        );
-        assert_eq!(
-            Pattern::from_str("[^xyz]*test")
-                .expect("valid")
-                .match_str("aabbcatest12"),
-            hash_set!["12"]
-        );
-        assert_eq!(
-            Pattern::from_str("\\d apple")
-                .expect("valid")
-                .match_str("1 apple"),
-            hash_set![""]
-        );
-        assert_eq!(
-            Pattern::from_str("^[abc]*test")
-                .expect("valid")
-                .match_str("abctest123"),
-            hash_set!["123"]
-        );
-        assert!(Pattern::from_str("^z[abc]*test")
-            .expect("valid")
-            .match_str("abctest123")
-            .is_empty());
-        assert!(Pattern::from_str("^log")
-            .expect("valid")
-            .match_str("slog")
-            .is_empty());
-        assert!(Pattern::from_str(".*^log.*")
-            .expect("valid")
-            .match_str("slog")
-            .is_empty());
-        assert_eq!(
-            Pattern::from_str("test")
-                .expect("valid")
-                .match_str("testabc"),
-            hash_set!["abc"]
-        );
-        assert!(Pattern::from_str("test$")
-            .expect("valid")
-            .match_str("testabc")
-            .is_empty());
-        assert_eq!(
-            Pattern::from_str("a+").expect("valid").match_str("aabc"),
-            hash_set!["abc", "bc"]
-        );
+    if pattern.ends_with('$') {
+        end_anchor = true;
+        pattern = &pattern[..pattern.len() - 1];
+    }
+    let pattern = parse_pattern(pattern);
+    let mut input = input_line;
+    loop {
+        'inner: loop {
+            for idx in 0..pattern.len() {
+                let ch = pattern.get(idx).unwrap();
+                match match_character(input, ch.clone()) {
+                    Ok(res) => {
+                        if res.is_empty() {
+                            // End of the pattern, match is succesful
+                            return idx == pattern.len() - 1;
+                        }
+                        input = res;
+                    }
+                    Err(res) => {
+                        if start_anchor {
+                            // Needed to match from the start
+                            return false;
+                        }
+                        if res.is_empty() {
+                            // End of the input, but didn't get the match
+                            return false;
+                        }
+                        input = res;
+                        // Reset the pattern
+                        break 'inner;
+                    }
+                }
+            }
+            // Whole pattern was matched and there's still more input left
+            // Match will fail if end anchor was set
+            return !end_anchor;
+        }
+    }
+}
+// Usage: echo <input_text> | your_grep.sh -E <pattern>
+fn main() {
+    if env::args().nth(1).unwrap() != "-E" {
+        println!("Expected first argument to be '-E'");
+        process::exit(1);
+    }
+    let pattern = env::args().nth(2).unwrap();
+    let pattern = dbg!(env::args().nth(2).unwrap());
+    let mut input_line = String::new();
+    io::stdin().read_line(&mut input_line).unwrap();
+    if match_pattern(input_line.trim_end(), &pattern) {
+    if match_pattern(dbg!(input_line.trim_end()), &pattern) {
+        eprintln!("Success");
+        process::exit(0)
+    } else {
+        eprintln!("Failure");
+        process::exit(1)
     }
 }
