@@ -1,318 +1,338 @@
 use std::env;
 use std::io;
 use std::process;
-#[derive(Debug, PartialEq, Clone)]
-enum Character {
-    Any,
-    Literal(char),
-    DecimalDigit,
-    Word,
-    Group(Vec<Character>),
-    NegativeGroup(Vec<Character>),
-    Optional(Box<Character>),
-    RepeatedOptional(Box<Character>),
-    Either((Vec<Character>, Vec<Character>)),
-    CaptureGroup(Vec<Character>),
+
+/// Checks if a character matches any of the given conditions
+///
+/// This function is used to evaluate special character classes and literal characters
+/// in the regex pattern.
+fn match_next(next_char: char, conditions: &[String]) -> bool {
+    conditions.iter().any(|condition| match condition.as_str() {
+        "\\d" => next_char.is_digit(10),
+        "\\s" => next_char.is_whitespace(),
+        "\\w" => next_char.is_alphanumeric(),
+        "." => true,
+        x => next_char.to_string() == *x,
+    })
 }
-#[derive(Debug)]
-enum Modifier {
-    OneOrMore,
-    ZeroOrOne,
-    ZeroOrMore,
-    Reference(usize),
-}
-fn parse_pattern(input: &str) -> Vec<Character> {
-    let mut output: Vec<Character> = vec![];
-    let mut remainder = input;
-    while !remainder.is_empty() {
-        let (rest, character, modifier) = parse_character(remainder);
-        match modifier {
-            Some(Modifier::OneOrMore) => {
-                // Keep the original item
-                let prev = output.last().unwrap().clone();
-                // And add it as optional as well
-                output.push(Character::RepeatedOptional(Box::new(prev)));
-            }
-            Some(Modifier::ZeroOrOne) => {
-                // Remove the last item
-                let prev = output.pop().unwrap();
-                // And re-add it as an optional
-                output.push(Character::Optional(Box::new(prev)));
-            }
-            Some(Modifier::ZeroOrMore) => {
-                // Remove the last item
-                let prev = output.pop().unwrap();
-                // And re-add it as a repeated optional
-                output.push(Character::RepeatedOptional(Box::new(prev)));
-            }
-            Some(Modifier::Reference(index)) => {
-                let group = output
-                    .iter()
-                    .filter(|c| matches!(c, Character::CaptureGroup(_)))
-                    .nth(index - 1)
-                    .unwrap();
-                if let Character::CaptureGroup(group) = group {
-                    output.extend(group.clone());
-                }
-            }
-            None => {
-                output.push(character.expect("Should have a character without modifier"));
-            }
-        }
-        remainder = rest;
+
+/// The main regex matching function
+///
+/// This recursive function implements the core logic for matching a regex pattern
+/// against an input string. It handles various regex features like anchors,
+/// character classes, groups, and quantifiers.
+fn match_pattern(
+    input_line: &mut Vec<char>,
+    pattern: &mut Vec<char>,
+    must_match: bool,
+    backreferences: &mut Vec<Vec<char>>,
+    char_after_group: Option<&char>,
+) -> bool {
+    // If the input is empty, only match if the pattern ends with '$'
+    if input_line.is_empty() {
+        return pattern.first() == Some(&'$');
     }
-    output
-}
-fn parse_character(input: &str) -> (&str, Option<Character>, Option<Modifier>) {
-    match input.chars().next() {
-        Some('\\') => (
-            &input[2..],
-            Some(special_character(&input.chars().nth(1).unwrap())),
-            None,
-        ),
-        Some('\\') => {
-            let remainder = &input[2..];
-            match &input.chars().nth(1).unwrap() {
-                index @ '1'..='9' => (
-                    remainder,
-                    None,
-                    Some(Modifier::Reference(index.to_digit(10).unwrap() as usize)),
-                ),
-                c => (remainder, Some(special_character(c)), None),
-            }
-        }
-        Some('[') => {
-            let mut group = vec![];
-            let mut remainder = &input[1..];
-            let is_negative = &input[1..2] == "^";
-            if is_negative {
-                remainder = &remainder[1..];
-            }
-            while !remainder.is_empty() && !remainder.starts_with(']') {
-                let (rest, character, _) = parse_character(remainder);
-            let pos = remainder.find(']').expect("closing bracket missing");
-            let group = parse_pattern(&remainder[..pos]);
-            remainder = &remainder[pos..];
-                group.push(character.expect("Should have a character without modifier"));
-                remainder = rest;
-            }
-            if is_negative {
-                (
-                    remainder.strip_prefix(']').unwrap(),
-                    Some(Character::NegativeGroup(group)),
-                    None,
-                )
-            let group = if is_negative {
-                Character::NegativeGroup(group)
-            } else {
-                (
-                    remainder.strip_prefix(']').unwrap(),
-                    Some(Character::Group(group)),
-                    None,
-                )
-            }
-                Character::Group(group)
-            };
-            (&remainder[1..], Some(group), None)
-        }
-        Some('(') => {
-            let mut remainder = &input[1..];
-            let mut first = vec![];
-            while !remainder.starts_with('|') {
-                let (rest, character, _) = parse_character(remainder);
-                first.push(character.expect("Should have a character without modifier"));
-                remainder = rest;
-            }
-            // Strip '|' prefix
-            remainder = &remainder[1..];
-            let mut second = vec![];
-            while !remainder.starts_with(')') {
-                let (rest, character, _) = parse_character(remainder);
-            let left = if let Some(pos) = remainder.find('|') {
-                let pattern = &remainder[..pos];
-                remainder = &remainder[pos + 1..];
-                Some(parse_pattern(pattern))
-            } else {
-                None
-            };
-                second.push(character.expect("Should have a character without modifier"));
-            let pos = remainder.find(')').expect("closing paren missing");
-            let right = parse_pattern(&remainder[..pos]);
-                remainder = rest;
-            }
-            let group = match left {
-                Some(left) => vec![Character::Either((left, right))],
-                _ => right,
-            };
-            (
-                remainder.strip_prefix(')').unwrap(),
-                Some(Character::Either((first, second))),
-                &remainder[pos + 1..],
-                Some(Character::CaptureGroup(group)),
+
+    let mut input_line_leftover = None;
+
+    // Handle different pattern start conditions
+    let (conditions, mut pattern_matched_last_index, is_negated) = match pattern.first() {
+        // Handle start-of-line anchor '^'
+        Some(&'^') if !must_match => {
+            return match_pattern(
+                input_line,
+                &mut pattern[1..].to_vec(),
+                true,
+                backreferences,
                 None,
             )
         }
-        Some('+') => (&input[1..], None, Some(Modifier::OneOrMore)),
-        Some('?') => (&input[1..], None, Some(Modifier::ZeroOrOne)),
-        Some('*') => (&input[1..], None, Some(Modifier::ZeroOrMore)),
-        Some('.') => (&input[1..], Some(Character::Any), None),
-        Some(c) => (&input[1..], Some(Character::Literal(c)), None),
-        _ => panic!("Unhandled pattern: {}", input),
-    }
-}
-fn special_character(input: &char) -> Character {
-    match input {
-        'd' => Character::DecimalDigit,
-        'w' => Character::Word,
-        '\\' => Character::Literal('\\'),
-        _ => panic!("Unsupported special char: {}", input),
-    }
-}
-fn to_match_result(input: &str, has_match: bool) -> Result<&str, &str> {
-    if has_match {
-        Ok(&input[1..])
-    } else {
-        Err(&input[1..])
-    }
-}
-fn match_character(input: &str, character: Character) -> Result<&str, &str> {
-    if input.is_empty() {
-        return Ok("");
-    }
-    let mut input = input;
-    let ch = input.chars().next().unwrap();
-    match character {
-        Character::Any => to_match_result(input, true),
-        Character::Literal(c) => to_match_result(input, c == ch),
-        Character::DecimalDigit => to_match_result(input, ch.is_ascii_digit()),
-        Character::Word => to_match_result(input, ch == '_' || ch.is_ascii_alphanumeric()),
-        Character::Group(items) => to_match_result(
-            input,
-            items
-                .iter()
-                .any(|i| match_character(input, i.clone()).is_ok()),
-        ),
-        Character::NegativeGroup(items) => to_match_result(
-            input,
-            !items
-                .iter()
-                .any(|i| match_character(input, i.clone()).is_ok()),
-        ),
-        Character::Optional(c) => {
-            if match_character(input, *c.clone()).is_ok() {
-                Ok(&input[1..])
-            } else {
-                Ok(input)
+        // Handle escaped characters and backreferences
+        Some(&'\\') => {
+            if let Some(index) = pattern.get(1) {
+                if index.is_digit(10) {
+                    let backreference_index = index.to_digit(10).unwrap() as usize;
+                    if let Some(backreference) =
+                        backreferences.get(backreference_index.saturating_sub(1))
+                    {
+                        let pattern_leftover = if pattern.len() > 2 {
+                            pattern[2..].to_vec()
+                        } else {
+                            vec![]
+                        };
+
+                        let updated_pattern =
+                            vec![backreference.clone(), pattern_leftover].concat();
+
+                        return match_pattern(
+                            input_line,
+                            &mut updated_pattern.to_vec(),
+                            true,
+                            backreferences,
+                            char_after_group,
+                        );
+                    }
+                }
             }
+
+            let conditions = vec![pattern[0..=1].iter().collect::<String>()];
+
+            (conditions, 1usize, false)
         }
-        Character::RepeatedOptional(c) => {
-            loop {
-                if match_character(input, *c.clone()).is_ok() {
-                    if input.is_empty() {
+        // Handle character classes [...]
+        Some(&'[') => {
+            let mut conditions: Vec<String> = vec![];
+            let mut i: usize = 0;
+            let mut is_negated = false;
+
+            while i < pattern.len() {
+                i += 1;
+                if pattern[i] == ']' {
+                    break;
+                } else if pattern[i] == '^' {
+                    is_negated = true;
+                    continue;
+                }
+
+                let condition = if pattern[i] == '\\' {
+                    i += 1;
+                    pattern[i - 1..=i].iter().collect::<String>()
+                } else {
+                    pattern[i].to_string()
+                };
+
+                conditions.push(condition);
+            }
+
+            (conditions, i, is_negated)
+        }
+        // Handle groups (...)
+        Some(&'(') => {
+            let mut i: usize = 1;
+            let mut current_pattern: Vec<char> = vec![];
+            let mut matched_line = None;
+            let mut internal_parentheses_starts = 0;
+            let mut internal_parentheses_ends = 0;
+
+            while i < pattern.len() {
+                if pattern[i] == '(' {
+                    internal_parentheses_starts += 1;
+                }
+
+                if internal_parentheses_starts == internal_parentheses_ends
+                    && (pattern[i] == ')' || pattern[i] == '|')
+                {
+                    if internal_parentheses_starts > 0 {
+                        backreferences.push(current_pattern.clone());
+                    }
+
+                    if input_line_leftover.is_none() {
+                        let mut input_line_clone = input_line.clone();
+
+                        let is_conditional = current_pattern.starts_with(&['[']);
+                        let char_after_group = if is_conditional {
+                            pattern.get(current_pattern.len() + 2)
+                        } else {
+                            None
+                        };
+
+                        let current_pattern_match = match_pattern(
+                            &mut input_line_clone,
+                            &mut current_pattern,
+                            must_match,
+                            backreferences,
+                            char_after_group,
+                        );
+
+                        if current_pattern_match {
+                            matched_line = Some(
+                                input_line[0..(input_line.len() - input_line_clone.len())].to_vec(),
+                            );
+                            input_line_leftover = Some(input_line_clone.clone());
+
+                            input_line.clear();
+                            input_line.extend(input_line_clone);
+                        }
+                    }
+
+                    current_pattern.clear();
+
+                    if pattern[i] == ')' {
                         break;
                     }
-                    input = &input[1..];
                 } else {
-                    break;
-                }
-            }
-            Ok(input)
-        }
-        Character::Either((left, right)) => {
-            if let Ok(res) = check_branch(input, left) {
-                Ok(res)
-            } else if let Ok(res) = check_branch(input, right) {
-                Ok(res)
-            } else {
-                Err(input)
-            }
-        }
-        Character::CaptureGroup(group) => {
-            if let Ok(res) = check_branch(input, group) {
-                Ok(res)
-            } else {
-                Err(&input[1..])
-            }
-        }
-    }
-}
-fn check_branch(input: &str, chars: Vec<Character>) -> Result<&str, &str> {
-    let mut input_mut = input;
-    for ch in chars {
-        match match_character(input_mut, ch) {
-            Ok(res) => {
-                input_mut = res;
-            }
-            Err(_) => {
-                return Err(input);
-            }
-        }
-    }
-    Ok(input_mut)
-}
-fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    let mut start_anchor = false;
-    let mut end_anchor = false;
-    let mut pattern = pattern;
-    if pattern.starts_with('^') {
-        start_anchor = true;
-        pattern = &pattern[1..];
-    }
-    if pattern.ends_with('$') {
-        end_anchor = true;
-        pattern = &pattern[..pattern.len() - 1];
-    }
-    let pattern = parse_pattern(pattern);
-    let mut input = input_line;
-    loop {
-        'inner: loop {
-            for idx in 0..pattern.len() {
-                let ch = pattern.get(idx).unwrap();
-                match match_character(input, ch.clone()) {
-                    Ok(res) => {
-                        if res.is_empty() {
-                            // End of the pattern, match is succesful
-                            return idx == pattern.len() - 1;
-                        }
-                        input = res;
-                    }
-                    Err(res) => {
-                        if start_anchor {
-                            // Needed to match from the start
-                            return false;
-                        }
-                        if res.is_empty() {
-                            // End of the input, but didn't get the match
-                            return false;
-                        }
-                        input = res;
-                        // Reset the pattern
-                        break 'inner;
+                    current_pattern.push(pattern[i]);
+
+                    if pattern[i] == ')' {
+                        internal_parentheses_ends += 1;
                     }
                 }
+
+                i += 1;
             }
-            // Whole pattern was matched and there's still more input left
-            // Match will fail if end anchor was set
-            return !end_anchor;
+
+            if let Some(line) = input_line_leftover.as_mut() {
+                let mut next_patterns = pattern[i + 1..].to_vec();
+                backreferences.push(matched_line.unwrap());
+                if next_patterns.len() > 0 {
+                    let matched = match_pattern(
+                        line,
+                        &mut next_patterns,
+                        true,
+                        backreferences,
+                        char_after_group,
+                    );
+
+                    if matched {
+                        input_line.clear();
+                        input_line.extend(line.iter());
+                    }
+
+                    return matched;
+                } else {
+                    return true;
+                }
+            } else {
+                return false;
+            }
         }
+        // Handle literal characters
+        Some(x) => (vec![x.to_string()], 0usize, false),
+        // If pattern is empty, it's a match
+        None => {
+            return true;
+        }
+    };
+
+    // Handle quantifiers and perform character matching
+    let (is_matching, input_line_matched_last_index, skip) = {
+        // Check for '+' and '?' quantifiers
+        let one_or_more = pattern
+            .get(pattern_matched_last_index + 1)
+            .map(|x| x == &'+')
+            .unwrap_or(false);
+        let zero_or_one = pattern
+            .get(pattern_matched_last_index + 1)
+            .map(|x| x == &'?')
+            .unwrap_or(false);
+
+        if one_or_more || zero_or_one {
+            pattern_matched_last_index += 1;
+        }
+
+        // Perform character matching
+        let mut matches = 0;
+        while let Some(next_char) = input_line.get(matches) {
+            if match_next(*next_char, &conditions) {
+                // If negated and match, it's not a global matching
+                if is_negated {
+                    return false;
+                }
+
+                matches += 1;
+
+                if one_or_more {
+                    continue;
+                }
+            } else if is_negated {
+                if let Some(char_after_group) = char_after_group {
+                    if *char_after_group == *next_char {
+                        break;
+                    }
+                }
+
+                matches += 1;
+
+                if one_or_more {
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        // Return matching results
+        (
+            matches > 0,
+            matches.saturating_sub(1),
+            zero_or_one && matches == 0,
+        )
+    };
+
+    // Remove matched characters from input, if a literal match happened
+    if !skip {
+        input_line.drain(0..=input_line_matched_last_index);
     }
+
+    // Handle successful matches and pattern updates
+    if is_matching || skip {
+        // Remove matched pattern
+        pattern.drain(0..=pattern_matched_last_index);
+
+        // If no more pattern, it's a complete match
+        if pattern.len() == 0 {
+            return true;
+        }
+    // This match was mandatory but didn't happen
+    } else if must_match {
+        return false;
+    }
+
+    // Handle negated character classes at the end of input
+    if is_negated && input_line.len() == 0 {
+        return true;
+    }
+
+    // Recursively continue matching
+    match_pattern(
+        input_line,
+        pattern,
+        must_match || is_matching,
+        backreferences,
+        char_after_group,
+    )
 }
-// Usage: echo <input_text> | your_grep.sh -E <pattern>
+
+/// The main function that parses command-line arguments and runs the regex matcher
+///
+/// Usage: echo <input_text> | your_program -E <pattern>
 fn main() {
-    if env::args().nth(1).unwrap() != "-E" {
-        println!("Expected first argument to be '-E'");
+    let args: Vec<String> = env::args().collect();
+
+    // Ensure the first argument is '-E'
+    if args.get(1).map_or(true, |arg| arg != "-E") {
+        eprintln!("Expected first argument to be '-E'");
         process::exit(1);
     }
-    let pattern = env::args().nth(2).unwrap();
-    let pattern = dbg!(env::args().nth(2).unwrap());
-    let mut input_line = String::new();
-    io::stdin().read_line(&mut input_line).unwrap();
-    if match_pattern(input_line.trim_end(), &pattern) {
-    if match_pattern(dbg!(input_line.trim_end()), &pattern) {
-        eprintln!("Success");
-        process::exit(0)
-    } else {
-        eprintln!("Failure");
-        process::exit(1)
-    }
+
+    // Get the regex pattern from command-line arguments
+    let pattern: Vec<char> = args
+        .get(2)
+        .expect("Pattern argument is required")
+        .chars()
+        .collect();
+
+    // Read input from stdin
+    let input_line: Vec<char> = io::stdin()
+        .lines()
+        .next()
+        .expect("Failed to read input")
+        .expect("Failed to parse input")
+        .chars()
+        .collect();
+
+    // Run the regex matcher and exit with appropriate status code
+    process::exit(
+        if match_pattern(
+            &mut input_line.clone(),
+            &mut pattern.clone(),
+            false,
+            &mut vec![],
+            None,
+        ) {
+            0 // Exit with 0 if there's a match
+        } else {
+            1 // Exit with 1 if there's no match
+        },
+    );
 }
